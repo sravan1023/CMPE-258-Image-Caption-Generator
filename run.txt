@@ -1,0 +1,17 @@
+
+pip install -r requirements.txt
+
+python preprocessing.py
+
+python -m models.baseline.train
+
+python -m models.attention.train
+
+python evaluate.py
+
+
+Optional-
+
+python -m models.baseline.inference
+
+python -m models.attention.inference
