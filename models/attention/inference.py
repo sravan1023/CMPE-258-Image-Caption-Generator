@@ -240,7 +240,7 @@ if __name__ == "__main__":
     # Paths
     checkpoint_path = "./checkpoints/checkpoint_primary_model_best.pth"
     image_dir = "../raw_data/Images"
-    processed_data_dir = "../data/processed"
+    processed_data_dir = "../data"
     
     # Load model
     device = 'cuda' if torch.cuda.is_available() else 'cpu'

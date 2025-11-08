@@ -284,7 +284,7 @@ if __name__ == "__main__":
     
     # Paths
     image_dir = "../raw_data/Images"
-    processed_data_dir = "../data/processed"
+    processed_data_dir = "../data"
     
     # Load vocabulary
     with open(os.path.join(processed_data_dir, 'vocab.pkl'), 'rb') as f:

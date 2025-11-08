@@ -170,7 +170,7 @@ def get_data_loaders(image_dir, processed_data_dir, batch_size=32,
 if __name__ == "__main__":
     # Test the dataset
     image_dir = "../raw_data/Images"
-    processed_data_dir = "../data/processed"
+    processed_data_dir = "../data"
     
     train_loader, val_loader, test_loader, vocab_data = get_data_loaders(
         image_dir, processed_data_dir, batch_size=4
