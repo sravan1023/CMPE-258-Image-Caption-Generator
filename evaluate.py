@@ -293,7 +293,7 @@ def main():
     baseline_checkpoint = './checkpoints/checkpoint_best.pth'
     attention_checkpoint = './checkpoints/checkpoint_primary_model_best.pth'
     image_dir = './raw_data/Images'
-    processed_dir = './data/processed'
+    processed_dir = './data'
     batch_size = 32
     max_length = 20
     save_results = './evaluation_results.json'
@@ -365,3 +365,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
