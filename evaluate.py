@@ -91,19 +91,22 @@ def generate_captions_baseline(model, data_loader, vocab_data, device, max_lengt
             images = images.to(device)
             batch_size = images.size(0)
             
-            # Generate captions
-            generated = model.generate_caption(images, max_length, start_token, end_token)
-            
-            # Convert to words
+            # Generate captions for each image in batch (one at a time)
             for i in range(batch_size):
+                # Generate caption for single image
+                single_image = images[i:i+1]  # Keep batch dimension
+                generated = model.generate_caption(single_image, max_length=max_length, 
+                                                  method='greedy', start_token=start_token, 
+                                                  end_token=end_token)
+                
                 # Predicted caption
-                pred_indices = generated[i].cpu().numpy().tolist()
+                pred_indices = generated.cpu().numpy().tolist()
                 pred_words = []
                 for idx in pred_indices:
                     if idx == end_token:
                         break
                     if idx not in [pad_token, start_token]:
-                        pred_words.append(idx2word.get(str(idx), '<UNK>'))
+                        pred_words.append(idx2word.get(idx, '<UNK>'))
                 
                 # Reference captions (remove special tokens)
                 ref_indices = captions[i].cpu().numpy().tolist()
@@ -112,7 +115,7 @@ def generate_captions_baseline(model, data_loader, vocab_data, device, max_lengt
                     if idx == end_token:
                         break
                     if idx not in [pad_token, start_token]:
-                        ref_words.append(idx2word.get(str(idx), '<UNK>'))
+                        ref_words.append(idx2word.get(idx, '<UNK>'))
                 
                 all_predictions.append(pred_words)
                 all_references.append([ref_words])  # List of lists for multiple references
@@ -150,7 +153,7 @@ def generate_captions_attention(model, data_loader, vocab_data, device, max_leng
                     if idx == end_token:
                         break
                     if idx not in [pad_token, start_token]:
-                        pred_words.append(idx2word.get(str(idx), '<UNK>'))
+                        pred_words.append(idx2word.get(idx, '<UNK>'))
                 
                 # Reference captions
                 ref_indices = captions[i].cpu().numpy().tolist()
@@ -159,7 +162,7 @@ def generate_captions_attention(model, data_loader, vocab_data, device, max_leng
                     if idx == end_token:
                         break
                     if idx not in [pad_token, start_token]:
-                        ref_words.append(idx2word.get(str(idx), '<UNK>'))
+                        ref_words.append(idx2word.get(idx, '<UNK>'))
                 
                 all_predictions.append(pred_words)
                 all_references.append([ref_words])
@@ -193,16 +196,22 @@ def compute_meteor_score(predictions, references):
         print("Downloading NLTK wordnet data...")
         nltk.download('wordnet', quiet=True)
         nltk.download('omw-1.4', quiet=True)
-    
+
+
     meteor_scores = []
     for pred, refs in zip(predictions, references):
-        # METEOR expects strings, not lists
-        pred_str = ' '.join(pred)
-        ref_str = ' '.join(refs[0])  # Use first reference
-        score = meteor_score([ref_str], pred_str)
+        # METEOR expects tokenized lists (not strings)
+        pred_tokens = pred  # Already a list
+        ref_tokens = refs[0]  # Use first reference (already a list)
+        
+        # Skip empty predictions or references
+        if len(pred_tokens) == 0 or len(ref_tokens) == 0:
+            continue
+            
+        score = meteor_score([ref_tokens], pred_tokens)
         meteor_scores.append(score)
-    
-    return sum(meteor_scores) / len(meteor_scores)
+
+    return sum(meteor_scores) / len(meteor_scores) if meteor_scores else 0.0
 
 try:
     from pycocoevalcap.cider.cider import Cider
@@ -365,4 +374,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
