@@ -19,7 +19,7 @@ class EncoderCNN(nn.Module):
         super(EncoderCNN, self).__init__()
         
         # Load pretrained ResNet-50
-        resnet = models.resnet50(pretrained=True)
+        resnet = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
         
         # Remove the final classification layer
         modules = list(resnet.children())[:-1]
@@ -125,13 +125,14 @@ class DecoderLSTM(nn.Module):
             captions: Generated caption indices (batch_size, max_length)
         """
         batch_size = features.size(0)
+        device = features.device
         captions = []
         
-        # Initialize LSTM states
-        states = None
-        inputs = features.unsqueeze(1)
+        # Initialize with image features as first input
+        inputs = features.unsqueeze(1)  # (batch_size, 1, embed_size)
+        states = None  # Let LSTM initialize to zeros
         
-        for _ in range(max_length):
+        for i in range(max_length):
             # Forward pass through LSTM
             lstm_out, states = self.lstm(inputs, states)
             outputs = self.fc(lstm_out.squeeze(1))
@@ -140,7 +141,11 @@ class DecoderLSTM(nn.Module):
             predicted = outputs.argmax(dim=1)
             captions.append(predicted)
             
-            # Prepare input for next step
+            # Stop if all sequences have generated end token
+            if (predicted == end_token).all():
+                break
+            
+            # Prepare input for next step - embed the predicted word
             inputs = self.embed(predicted).unsqueeze(1)
         
         # Stack captions

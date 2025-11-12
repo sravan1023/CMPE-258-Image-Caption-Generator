@@ -261,7 +261,7 @@ def create_default_config():
         'hidden_size': cfg.BASELINE['hidden_size'],
         'num_layers': 1,
         'dropout': cfg.BASELINE['dropout'],
-        'train_cnn': False,
+        'train_cnn': True,  # Fine-tune CNN encoder for better image understanding
         'learning_rate': cfg.BASELINE['learning_rate'],
         'weight_decay': cfg.BASELINE['weight_decay'],
         'grad_clip': cfg.BASELINE['grad_clip'],
@@ -275,22 +275,32 @@ def create_default_config():
 
 
 if __name__ == "__main__":
-    from model import ImageCaptioningModel
-    from dataset import ImageCaptionDataset
+    from .model import ImageCaptioningModel
+    from .dataset import get_data_loaders
     import pickle
     
     # Configuration
     config = create_default_config()
     
     # Paths
-    image_dir = "../raw_data/Images"
-    processed_data_dir = "../data"
+    image_dir = "./raw_data/Images"
+    processed_data_dir = "./data"
     
     # Load vocabulary
     with open(os.path.join(processed_data_dir, 'vocab.pkl'), 'rb') as f:
         vocab_data = pickle.load(f)
     
-    # Create model (for testing)
+    # Create data loaders
+    print("\nCreating data loaders...")
+    train_loader, val_loader, test_loader, vocab_data = get_data_loaders(
+        image_dir=image_dir,
+        processed_data_dir=processed_data_dir,
+        batch_size=config['batch_size'],
+        num_workers=config['num_workers'],
+        image_size=config['image_size']
+    )
+    
+    # Create model
     model = ImageCaptioningModel(
         embed_size=config['embed_size'],
         hidden_size=config['hidden_size'],
@@ -300,4 +310,12 @@ if __name__ == "__main__":
         train_cnn=config['train_cnn']
     )
     
-    print(f"\nModel created with {sum(p.numel() for p in model.parameters())} parameters")
+    print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
+    
+    # Create trainer
+    print("\nInitializing trainer...")
+    trainer = Trainer(model, train_loader, val_loader, vocab_data, config)
+    
+    # Start training
+    print("\nStarting training...")
+    trainer.train(config['num_epochs'])
