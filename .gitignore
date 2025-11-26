@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# Project artifacts
+checkpoints/
+data/
+raw_data/Images/
+*.pth
+*.pkl

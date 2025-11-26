@@ -10,10 +10,12 @@ import os
 import json
 from tqdm import tqdm
 from collections import defaultdict
+from PIL import Image
+from torchvision import transforms
 
 # Import models
-from models.baseline.model import ImageCaptioningModel
-from models.baseline.dataset import get_data_loaders as get_baseline_loaders
+from model_baseline_only import BaselineCaptionModel
+from model_baseline_only import get_data_loaders as get_baseline_loaders
 from models.attention.model import ImageCaptioningModelAttention
 from models.attention.dataset import get_data_loaders_attention
 
@@ -23,19 +25,73 @@ from nltk.translate.meteor_score import meteor_score
 import nltk
 
 
+def get_inference_transform(image_size=224):
+    """Image transform that mirrors validation preprocessing."""
+    return transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+
+
+def preprocess_single_image(image_path, device, image_size=224):
+    """Load and preprocess a single image for inference."""
+    transform = get_inference_transform(image_size)
+    image = Image.open(image_path).convert('RGB')
+    return transform(image).unsqueeze(0).to(device)
+
+
+def decode_indices(indices, vocab_data):
+    """Convert list of token ids back to a caption string."""
+    idx2word = vocab_data['idx2word']
+    word2idx = vocab_data['word2idx']
+    end_token = word2idx['<END>']
+    start_token = word2idx['<START>']
+    pad_token = word2idx['<PAD>']
+
+    words = []
+    for idx in indices:
+        if idx == end_token:
+            break
+        if idx in (start_token, pad_token):
+            continue
+        word = idx2word.get(idx) or idx2word.get(str(idx), '<UNK>')
+        words.append(word)
+    return ' '.join(words)
+
+
+def generate_caption(image_path, model, vocab_data, device, max_length=20, method='greedy', beam_width=3):
+    """Generate a caption for an image path using the baseline model."""
+    model.eval()
+    with torch.no_grad():
+        image_tensor = preprocess_single_image(image_path, device)
+        start_token = vocab_data['word2idx']['<START>']
+        end_token = vocab_data['word2idx']['<END>']
+        preds = model.generate(
+            image_tensor,
+            max_length=max_length,
+            start_token=start_token,
+            end_token=end_token,
+            method='beam' if method == 'beam' else 'greedy',
+            beam_width=beam_width,
+        )
+        caption_tokens = preds[0].cpu().tolist()
+    return decode_indices(caption_tokens, vocab_data)
+
+
 def load_baseline_model(checkpoint_path, device):
     """Load baseline model from checkpoint"""
     checkpoint = torch.load(checkpoint_path, map_location=device)
     config = checkpoint['config']
     vocab_data = checkpoint['vocab_data']
     
-    model = ImageCaptioningModel(
+    model = BaselineCaptionModel(
         embed_size=config['embed_size'],
         hidden_size=config['hidden_size'],
         vocab_size=vocab_data['vocab_size'],
-        num_layers=config['num_layers'],
-        dropout=config['dropout'],
-        train_cnn=config['train_cnn']
+        dropout=config.get('dropout', 0.5),
+        train_cnn=config.get('train_cnn', False)
     )
     
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -78,10 +134,8 @@ def generate_captions_baseline(model, data_loader, vocab_data, device, max_lengt
     """Generate captions using baseline model"""
     model.eval()
     
-    idx2word = vocab_data['idx2word']
     start_token = vocab_data['word2idx']['<START>']
     end_token = vocab_data['word2idx']['<END>']
-    pad_token = vocab_data['word2idx']['<PAD>']
     
     all_predictions = []
     all_references = []
@@ -89,30 +143,20 @@ def generate_captions_baseline(model, data_loader, vocab_data, device, max_lengt
     with torch.no_grad():
         for images, captions, _ in tqdm(data_loader, desc="Generating captions (baseline)"):
             images = images.to(device)
-            batch_size = images.size(0)
+            generated = model.generate(
+                images,
+                max_length=max_length,
+                start_token=start_token,
+                end_token=end_token,
+                method='greedy'
+            )
             
-            # Generate captions
-            generated = model.generate_caption(images, max_length, start_token, end_token)
-            
-            # Convert to words
-            for i in range(batch_size):
-                # Predicted caption
-                pred_indices = generated[i].cpu().numpy().tolist()
-                pred_words = []
-                for idx in pred_indices:
-                    if idx == end_token:
-                        break
-                    if idx not in [pad_token, start_token]:
-                        pred_words.append(idx2word.get(str(idx), '<UNK>'))
+            for i in range(images.size(0)):
+                pred_indices = generated[i].cpu().tolist()
+                pred_words = decode_indices(pred_indices, vocab_data).split()
                 
-                # Reference captions (remove special tokens)
-                ref_indices = captions[i].cpu().numpy().tolist()
-                ref_words = []
-                for idx in ref_indices:
-                    if idx == end_token:
-                        break
-                    if idx not in [pad_token, start_token]:
-                        ref_words.append(idx2word.get(str(idx), '<UNK>'))
+                ref_indices = captions[i].cpu().tolist()
+                ref_words = decode_indices(ref_indices, vocab_data).split()
                 
                 all_predictions.append(pred_words)
                 all_references.append([ref_words])  # List of lists for multiple references
@@ -124,10 +168,8 @@ def generate_captions_attention(model, data_loader, vocab_data, device, max_leng
     """Generate captions using attention model"""
     model.eval()
     
-    idx2word = vocab_data['idx2word']
     start_token = vocab_data['word2idx']['<START>']
     end_token = vocab_data['word2idx']['<END>']
-    pad_token = vocab_data['word2idx']['<PAD>']
     
     all_predictions = []
     all_references = []
@@ -143,23 +185,11 @@ def generate_captions_attention(model, data_loader, vocab_data, device, max_leng
             
             # Convert to words
             for i in range(batch_size):
-                # Predicted caption
-                pred_indices = generated[i].cpu().numpy().tolist()
-                pred_words = []
-                for idx in pred_indices:
-                    if idx == end_token:
-                        break
-                    if idx not in [pad_token, start_token]:
-                        pred_words.append(idx2word.get(str(idx), '<UNK>'))
+                pred_indices = generated[i].cpu().tolist()
+                pred_words = decode_indices(pred_indices, vocab_data).split()
                 
-                # Reference captions
-                ref_indices = captions[i].cpu().numpy().tolist()
-                ref_words = []
-                for idx in ref_indices:
-                    if idx == end_token:
-                        break
-                    if idx not in [pad_token, start_token]:
-                        ref_words.append(idx2word.get(str(idx), '<UNK>'))
+                ref_indices = captions[i].cpu().tolist()
+                ref_words = decode_indices(ref_indices, vocab_data).split()
                 
                 all_predictions.append(pred_words)
                 all_references.append([ref_words])
