@@ -148,7 +148,8 @@ def generate_captions_baseline(model, data_loader, vocab_data, device, max_lengt
                 max_length=max_length,
                 start_token=start_token,
                 end_token=end_token,
-                method='greedy'
+                method='beam',
+                beam_width=3
             )
             
             for i in range(images.size(0)):
