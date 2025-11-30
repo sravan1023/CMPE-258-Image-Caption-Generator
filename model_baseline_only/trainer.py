@@ -47,18 +47,22 @@ class Trainer:
         self.best_val_loss = float('inf')
 
         os.makedirs(config['checkpoint_dir'], exist_ok=True)
+        self.live_plot = config.get('show_live_plot', False)
+        self.live_plot_fig = None
+        self.live_plot_ax = None
 
     def train_epoch(self, epoch: int) -> float:
         self.model.train()
         total_loss = 0.0
         progress = tqdm(self.train_loader, desc=f"Epoch {epoch}")
+        sampling_prob = self._scheduled_sampling_prob(epoch)
 
         for batch_idx, (images, captions, _) in enumerate(progress):
             images = images.to(self.device)
             captions = captions.to(self.device)
 
             self.optimizer.zero_grad()
-            outputs = self.model(images, captions)
+            outputs = self.model(images, captions, scheduled_sampling_prob=sampling_prob)
 
             targets = captions[:, 1:]
 
@@ -71,6 +75,7 @@ class Trainer:
             progress.set_postfix({
                 'loss': f'{loss.item():.4f}',
                 'avg_loss': f'{total_loss/(batch_idx+1):.4f}',
+                'ss_prob': f'{sampling_prob:.2f}',
             })
 
         return total_loss / len(self.train_loader)
@@ -149,9 +154,42 @@ class Trainer:
                 self.best_val_loss = val_loss
             self.save_checkpoint(epoch, val_loss, is_best)
             self.save_history()
+            self._update_live_plot()
 
         print(f"\nTraining complete! Best val loss: {self.best_val_loss:.4f}")
+        if self.live_plot_fig is not None:
+            plt.ioff()
         self.plot_curves()
+
+    def _scheduled_sampling_prob(self, epoch: int) -> float:
+        max_prob = self.config.get('scheduled_sampling_max_prob', 0.0)
+        growth = self.config.get('scheduled_sampling_growth', 0.0)
+        start_epoch = self.config.get('scheduled_sampling_start_epoch', 1)
+        if max_prob <= 0.0 or growth <= 0.0:
+            return 0.0
+        if epoch < start_epoch:
+            return 0.0
+        steps = epoch - start_epoch + 1
+        return min(max_prob, growth * steps)
+
+    def _update_live_plot(self):
+        if not self.live_plot:
+            return
+        if self.live_plot_fig is None:
+            plt.ion()
+            self.live_plot_fig, self.live_plot_ax = plt.subplots(figsize=(8, 5))
+        ax = self.live_plot_ax
+        ax.clear()
+        ax.plot(self.train_losses, label='Train Loss', marker='o')
+        ax.plot(self.val_losses, label='Val Loss', marker='s')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.set_title('Baseline Training/Validation Loss (Live)')
+        ax.legend()
+        ax.grid(True)
+        self.live_plot_fig.canvas.draw()
+        self.live_plot_fig.canvas.flush_events()
+        plt.pause(0.001)
 
 
 def create_default_config():
@@ -168,4 +206,8 @@ def create_default_config():
         'image_size': 224,
         'num_epochs': cfg.BASELINE['num_epochs'],
         'checkpoint_dir': './checkpoints',
+        'scheduled_sampling_start_epoch': 3,
+        'scheduled_sampling_growth': 0.05,
+        'scheduled_sampling_max_prob': 0.3,
+        'show_live_plot': True,
     }

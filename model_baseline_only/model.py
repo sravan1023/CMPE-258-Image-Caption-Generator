@@ -52,22 +52,45 @@ class BaselineDecoder(nn.Module):
         self.init_hidden = nn.Linear(embed_size, hidden_size)
         self.init_cell = nn.Linear(embed_size, hidden_size)
 
-    def forward(self, features: torch.Tensor, captions: torch.Tensor) -> torch.Tensor:
+    def forward(self, features: torch.Tensor, captions: torch.Tensor, scheduled_sampling_prob: float = 0.0) -> torch.Tensor:
         """
         Forward pass for teacher-forced training.
 
         Args:
             features: Encoded images (batch, embed_size)
             captions: Tokenized captions (batch, max_len)
+            scheduled_sampling_prob: Probability of feeding the model's previous token
         Returns:
             Logits over vocabulary for each time-step.
         """
         inputs = captions[:, :-1]  # remove <END>, keep <START>
-        embeddings = self.embedding(inputs)
         hidden_state, cell_state = self._init_state(features)
-        outputs, _ = self.lstm(embeddings, (hidden_state, cell_state))
-        outputs = self.fc(self.dropout(outputs))
-        return outputs
+
+        if scheduled_sampling_prob <= 0.0:
+            embeddings = self.embedding(inputs)
+            outputs, _ = self.lstm(embeddings, (hidden_state, cell_state))
+            outputs = self.fc(self.dropout(outputs))
+            return outputs
+
+        batch_size, seq_len = inputs.size()
+        outputs = []
+        prev_tokens = None
+
+        for t in range(seq_len):
+            step_tokens = inputs[:, t]
+            if t > 0 and prev_tokens is not None:
+                mask = (torch.rand(batch_size, device=features.device) < scheduled_sampling_prob)
+                if mask.any():
+                    step_tokens = step_tokens.clone()
+                    step_tokens[mask] = prev_tokens[mask]
+
+            step_embed = self.embedding(step_tokens).unsqueeze(1)
+            lstm_out, (hidden_state, cell_state) = self.lstm(step_embed, (hidden_state, cell_state))
+            logits = self.fc(self.dropout(lstm_out.squeeze(1)))
+            outputs.append(logits)
+            prev_tokens = logits.argmax(dim=1)
+
+        return torch.stack(outputs, dim=1)
 
     def _init_state(self, features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Create the initial LSTM states from encoded image features."""
@@ -167,9 +190,9 @@ class BaselineCaptionModel(nn.Module):
         self.encoder = BaselineEncoder(embed_size, train_cnn=train_cnn)
         self.decoder = BaselineDecoder(embed_size, hidden_size, vocab_size, dropout=dropout)
 
-    def forward(self, images: torch.Tensor, captions: torch.Tensor) -> torch.Tensor:
+    def forward(self, images: torch.Tensor, captions: torch.Tensor, scheduled_sampling_prob: float = 0.0) -> torch.Tensor:
         features = self.encoder(images)
-        outputs = self.decoder(features, captions)
+        outputs = self.decoder(features, captions, scheduled_sampling_prob=scheduled_sampling_prob)
         return outputs
 
     def generate(
