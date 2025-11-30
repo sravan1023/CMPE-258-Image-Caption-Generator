@@ -14,10 +14,12 @@ from PIL import Image
 from torchvision import transforms
 
 # Import models
-from model_baseline_only import BaselineCaptionModel
-from model_baseline_only import get_data_loaders as get_baseline_loaders
-from models.attention.model import ImageCaptioningModelAttention
-from models.attention.dataset import get_data_loaders_attention
+from model_baseline_only import (
+    BaselineCaptionModel,
+    AttentionCaptionModel,
+    get_data_loaders as get_baseline_loaders,
+    get_data_loaders_attention,
+)
 
 # Metrics
 from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
@@ -110,7 +112,7 @@ def load_attention_model(checkpoint_path, device):
     config = checkpoint['config']
     vocab_data = checkpoint['vocab_data']
     
-    model = ImageCaptioningModelAttention(
+    model = AttentionCaptionModel(
         embed_size=config['embed_size'],
         attention_dim=config['attention_dim'],
         decoder_dim=config['decoder_dim'],
@@ -176,15 +178,13 @@ def generate_captions_attention(model, data_loader, vocab_data, device, max_leng
     all_references = []
     
     with torch.no_grad():
-        for images, captions, _ in tqdm(data_loader, desc="Generating captions (attention)"):
+        for images, captions, lengths in tqdm(data_loader, desc="Generating captions (attention)"):
             images = images.to(device)
             batch_size = images.size(0)
             
-            # Generate captions
             encoder_out = model.encoder(images)
             generated, _ = model.decoder.sample(encoder_out, max_length, start_token, end_token)
             
-            # Convert to words
             for i in range(batch_size):
                 pred_indices = generated[i].cpu().tolist()
                 pred_words = decode_indices(pred_indices, vocab_data).split()
@@ -324,7 +324,7 @@ def evaluate_model(model, data_loader, vocab_data, device, model_name, max_lengt
 def main():
     # Configuration
     baseline_checkpoint = './checkpoints/checkpoint_best.pth'
-    attention_checkpoint = './checkpoints/checkpoint_primary_model_best.pth'
+    attention_checkpoint = './checkpoints/checkpoint_attention_best.pth'
     image_dir = './raw_data/Images'
     processed_dir = './data'
     batch_size = 32

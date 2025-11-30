@@ -142,3 +142,81 @@ def get_data_loaders(
     )
 
     return train_loader, val_loader, test_loader, vocab_data
+
+
+def collate_fn_attention(batch):
+    batch.sort(key=lambda x: x[2], reverse=True)
+    images, captions, lengths = zip(*batch)
+    images = torch.stack(images, 0)
+    captions = torch.stack(captions, 0)
+    lengths = torch.tensor(lengths, dtype=torch.long)
+    return images, captions, lengths
+
+
+def get_data_loaders_attention(
+    image_dir: str,
+    processed_data_dir: str,
+    batch_size: int = 32,
+    num_workers: int = 0,
+    image_size: int = 224,
+):
+    with open(os.path.join(processed_data_dir, 'vocab.pkl'), 'rb') as f:
+        vocab_data = pickle.load(f)
+    with open(os.path.join(processed_data_dir, 'captions_processed.pkl'), 'rb') as f:
+        processed_captions = pickle.load(f)
+    with open(os.path.join(processed_data_dir, 'dataset_splits.pkl'), 'rb') as f:
+        splits = pickle.load(f)
+
+    max_caption_length = vocab_data['max_caption_length']
+
+    train_dataset = ImageCaptionDataset(
+        image_dir=image_dir,
+        processed_captions=processed_captions,
+        vocab_data=vocab_data,
+        image_names=splits['train'],
+        max_caption_length=max_caption_length,
+        transform=_get_transforms(image_size, mode='train'),
+    )
+    val_dataset = ImageCaptionDataset(
+        image_dir=image_dir,
+        processed_captions=processed_captions,
+        vocab_data=vocab_data,
+        image_names=splits['val'],
+        max_caption_length=max_caption_length,
+        transform=_get_transforms(image_size, mode='val'),
+    )
+    test_dataset = ImageCaptionDataset(
+        image_dir=image_dir,
+        processed_captions=processed_captions,
+        vocab_data=vocab_data,
+        image_names=splits['test'],
+        max_caption_length=max_caption_length,
+        transform=_get_transforms(image_size, mode='test'),
+    )
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        collate_fn=collate_fn_attention,
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        collate_fn=collate_fn_attention,
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        collate_fn=collate_fn_attention,
+    )
+
+    return train_loader, val_loader, test_loader, vocab_data
