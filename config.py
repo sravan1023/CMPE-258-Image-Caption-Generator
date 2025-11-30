@@ -15,8 +15,8 @@ VAL_RATIO = 0.1
 
 # Baseline model hyperparameters
 BASELINE = {
-    'embed_size': 256,
-    'hidden_size': 512,
+    'embed_size': 128,
+    'hidden_size': 256,
     'dropout': 0.6,
     'learning_rate': 0.001,
     'batch_size': 32,

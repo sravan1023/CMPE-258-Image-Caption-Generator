@@ -18,10 +18,10 @@ class BaselineEncoder(nn.Module):
 
     def __init__(self, embed_size: int, train_cnn: bool = False) -> None:
         super().__init__()
-        resnet = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+        resnet = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
         modules = list(resnet.children())[:-1]  # keep global average pooling, drop FC
         self.backbone = nn.Sequential(*modules)
-        self.feature_dim = resnet.fc.in_features  # 2048
+        self.feature_dim = resnet.fc.in_features  # 512 for ResNet-18
         self.project = nn.Linear(self.feature_dim, embed_size)
         self.bn = nn.BatchNorm1d(embed_size)
 
