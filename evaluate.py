@@ -226,10 +226,12 @@ def compute_meteor_score(predictions, references):
     
     meteor_scores = []
     for pred, refs in zip(predictions, references):
-        # METEOR expects strings, not lists
-        pred_str = ' '.join(pred)
-        ref_str = ' '.join(refs[0])  # Use first reference
-        score = meteor_score([ref_str], pred_str)
+        # METEOR expects tokenized inputs (lists of words)
+        if refs:
+            ref_tokens = refs[0]
+        else:
+            ref_tokens = []
+        score = meteor_score([ref_tokens], pred)
         meteor_scores.append(score)
     
     return sum(meteor_scores) / len(meteor_scores)
