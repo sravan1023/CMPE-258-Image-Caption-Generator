@@ -5,7 +5,7 @@ python preprocessing.py
 
 python -m models.baseline.train
 
-python -m models.attention.train
+python -m models.attention.attention.train
 
 python evaluate.py
 
@@ -14,4 +14,4 @@ Optional-
 
 python -m models.baseline.inference
 
-python -m models.attention.inference
+python -m models.attention.attention.inference

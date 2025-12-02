@@ -1,118 +1,139 @@
-"""
-Training script for CNN-LSTM Image Captioning Model with Attention
-"""
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.nn.utils.rnn import pack_padded_sequence
 from tqdm import tqdm
 import os
 import json
 import matplotlib.pyplot as plt
 import numpy as np
+import pickle
 
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(42)
 
 class TrainerAttention:
-    """Trainer class for image captioning model with attention"""
     
     def __init__(self, model, train_loader, val_loader, vocab_data, config):
-        """
-        Args:
-            model: ImageCaptioningModelAttention instance
-            train_loader: Training data loader
-            val_loader: Validation data loader
-            vocab_data: Vocabulary data dictionary
-            config: Training configuration dictionary
-        """
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.vocab_data = vocab_data
         self.config = config
         
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Using MPS
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            self.device = torch.device('mps')
+            print(f"Success: Using Apple MPS (Metal Performance Shaders) acceleration.")
+        else:
+            self.device = torch.device('cpu')
+            print("Warning: Using CPU. Training will be slow.")
+        
         self.model.to(self.device)
         
-        # Loss function (ignore padding tokens)
-        self.criterion = nn.CrossEntropyLoss(ignore_index=vocab_data['word2idx']['<PAD>'])
+        # Loss function
+        self.criterion = nn.CrossEntropyLoss()
         
-        # Separate optimizer for encoder and decoder
-        self.optimizer = optim.Adam(
-            self.model.parameters(),
-            lr=config['learning_rate'],
-            weight_decay=config.get('weight_decay', 0)
-        )
+        # Optimizer with Differential Learning Rates 
+        if config.get('fine_tune_encoder', False):
+            # For fine-tuning, we give the encoder a much lower learning rate
+            encoder_params = list(map(id, model.encoder.parameters()))
+            decoder_params = filter(lambda p: id(p) not in encoder_params, model.parameters())
+            
+            self.optimizer = optim.Adam([
+                {'params': model.encoder.parameters(), 'lr': config.get('encoder_lr', 1e-4)},
+                {'params': decoder_params, 'lr': config['learning_rate']}
+            ], weight_decay=config.get('weight_decay', 0))
+        else:
+            self.optimizer = optim.Adam(
+                self.model.parameters(),
+                lr=config['learning_rate'],
+                weight_decay=config.get('weight_decay', 0)
+            )
         
         # Learning rate scheduler
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer,
-            mode='min',
-            factor=0.5,
-            patience=3
+            self.optimizer, mode='min', factor=0.8, patience=2
         )
         
-        # Training history
         self.train_losses = []
         self.val_losses = []
         self.best_val_loss = float('inf')
-        
-        # Alpha regularization weight (doubly stochastic attention)
         self.alpha_c = config.get('alpha_c', 1.0)
         
-        # Create checkpoint directory
         os.makedirs(config['checkpoint_dir'], exist_ok=True)
     
     def train_epoch(self, epoch):
-        """Train for one epoch"""
-        self.model.train()
-        total_loss = 0
+        # Epoch 1-5: Freeze Encoder (Fast, trains LSTM only)
+        # Epoch 6+: Unfreeze Encoder (Slow, trains everything for accuracy)
+        # This is to make the run time lower and also achieve less loss value.
+        fine_tune = self.config.get('fine_tune_encoder', False) and (epoch > 5)
         
+        if fine_tune:
+            print(f"Epoch {epoch}: Encoder UN-FROZEN (Fine-Tuning Mode)")
+            self.model.encoder.train()
+            for p in self.model.encoder.parameters():
+                p.requires_grad = True
+        else:
+            print(f"Epoch {epoch}: Encoder FROZEN (Warm-up Mode)")
+            self.model.encoder.eval()
+            for p in self.model.encoder.parameters():
+                p.requires_grad = False
+                
+        self.model.decoder.train() # Decoder always trains
+        
+        total_loss = 0
         progress_bar = tqdm(self.train_loader, desc=f'Epoch {epoch}')
         
         for batch_idx, (images, captions, lengths) in enumerate(progress_bar):
-            # Move to device
             images = images.to(self.device)
             captions = captions.to(self.device)
             caption_lengths = lengths.unsqueeze(1).to(self.device)
             
-            # Zero gradients
             self.optimizer.zero_grad()
             
             # Forward pass
             predictions, alphas, encoded_captions, decode_lengths, sort_ind = self.model(
                 images, captions, caption_lengths
             )
+
+            targets = encoded_captions[:, 1:]
+
+            predictions_packed = pack_padded_sequence(
+                predictions, 
+                decode_lengths, 
+                batch_first=True
+            )
             
-            # Calculate loss
-            # Since we sorted the captions, targets need to be sorted too
-            targets = encoded_captions[:, 1:]  # Remove <START> token
+            targets_packed = pack_padded_sequence(
+                targets, 
+                decode_lengths, 
+                batch_first=True
+            )
             
-            # Pack padded sequences - only calculate loss on actual caption words
-            predictions_packed = predictions.contiguous().view(-1, predictions.size(-1))
-            targets_packed = targets.contiguous().view(-1)
+            # Calculate Cross Entropy Loss
+            loss = self.criterion(predictions_packed.data, targets_packed.data)
             
-            # Calculate cross-entropy loss
-            loss = self.criterion(predictions_packed, targets_packed)
-            
-            # Add doubly stochastic attention regularization
-            # Encourage attention weights to focus on each region exactly once
+            # Add Doubly Stochastic Attention Regularization
+            # Helps the model look at every part of the image exactly once, alpha_c=1
             alpha_reg = self.alpha_c * ((1. - alphas.sum(dim=1)) ** 2).mean()
             loss += alpha_reg
             
             # Backward pass
             loss.backward()
             
-            # Clip gradients to prevent exploding gradients
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 
-                                          self.config.get('grad_clip', 5.0))
+            # Clip gradients
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.get('grad_clip', 5.0))
             
             # Update weights
             self.optimizer.step()
             
-            # Update statistics
             total_loss += loss.item()
             
-            # Update progress bar
             progress_bar.set_postfix({
                 'loss': f'{loss.item():.4f}',
                 'avg_loss': f'{total_loss/(batch_idx+1):.4f}'
@@ -122,28 +143,26 @@ class TrainerAttention:
         return avg_loss
     
     def validate(self):
-        """Validate the model"""
         self.model.eval()
         total_loss = 0
         
         with torch.no_grad():
             for images, captions, lengths in tqdm(self.val_loader, desc='Validating'):
-                # Move to device
                 images = images.to(self.device)
                 captions = captions.to(self.device)
                 caption_lengths = lengths.unsqueeze(1).to(self.device)
                 
-                # Forward pass
                 predictions, alphas, encoded_captions, decode_lengths, sort_ind = self.model(
                     images, captions, caption_lengths
                 )
-                
-                # Calculate loss
+
                 targets = encoded_captions[:, 1:]
-                predictions_packed = predictions.contiguous().view(-1, predictions.size(-1))
-                targets_packed = targets.contiguous().view(-1)
+
+                predictions_packed = pack_padded_sequence(predictions, decode_lengths, batch_first=True)
+                targets_packed = pack_padded_sequence(targets, decode_lengths, batch_first=True)
                 
-                loss = self.criterion(predictions_packed, targets_packed)
+                loss = self.criterion(predictions_packed.data, targets_packed.data)
+                
                 alpha_reg = self.alpha_c * ((1. - alphas.sum(dim=1)) ** 2).mean()
                 loss += alpha_reg
                 
@@ -153,7 +172,6 @@ class TrainerAttention:
         return avg_loss
     
     def save_checkpoint(self, epoch, val_loss, is_best=False):
-        """Save model checkpoint"""
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
@@ -164,110 +182,54 @@ class TrainerAttention:
             'vocab_data': self.vocab_data
         }
         
-        # Save latest checkpoint
-        checkpoint_path = os.path.join(
-            self.config['checkpoint_dir'], 
-            'checkpoint_primary_model_latest.pth'
-        )
-        torch.save(checkpoint, checkpoint_path)
+        # Save latest
+        torch.save(checkpoint, os.path.join(self.config['checkpoint_dir'], 'checkpoint_primary_model_latest.pth'))
         
-        # Save best checkpoint
+        # Save best
         if is_best:
-            best_path = os.path.join(
-                self.config['checkpoint_dir'], 
-                'checkpoint_primary_model_best.pth'
-            )
-            torch.save(checkpoint, best_path)
+            torch.save(checkpoint, os.path.join(self.config['checkpoint_dir'], 'checkpoint_primary_model_best.pth'))
             print(f"Saved best model with validation loss: {val_loss:.4f}")
     
-    def load_checkpoint(self, checkpoint_path):
-        """Load model checkpoint"""
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        return checkpoint['epoch']
-    
     def train(self, num_epochs):
-        """Train the model for multiple epochs"""
         print(f"Training on device: {self.device}")
         print(f"Number of epochs: {num_epochs}")
-        print(f"Training samples: {len(self.train_loader.dataset)}")
-        print(f"Validation samples: {len(self.val_loader.dataset)}")
         print("-" * 50)
         
         for epoch in range(1, num_epochs + 1):
-            # Train
             train_loss = self.train_epoch(epoch)
             self.train_losses.append(train_loss)
             
-            # Validate
             val_loss = self.validate()
             self.val_losses.append(val_loss)
             
-            print(f"\nEpoch {epoch}/{num_epochs}")
-            print(f"Train Loss: {train_loss:.4f}")
-            print(f"Val Loss: {val_loss:.4f}")
-            print("-" * 50)
+            print(f"\nEpoch {epoch}/{num_epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
             
-            # Learning rate scheduling
             self.scheduler.step(val_loss)
             
-            # Save checkpoint
             is_best = val_loss < self.best_val_loss
             if is_best:
                 self.best_val_loss = val_loss
             
             self.save_checkpoint(epoch, val_loss, is_best)
-            
-            # Save training history
-            self.save_training_history()
+            self.plot_training_curves()
         
-        print(f"\nTraining complete!")
-        print(f"Best validation loss: {self.best_val_loss:.4f}")
-        
-        # Plot training curves
-        self.plot_training_curves()
-    
-    def save_training_history(self):
-        """Save training history to JSON"""
-        history = {
-            'train_losses': self.train_losses,
-            'val_losses': self.val_losses,
-            'best_val_loss': self.best_val_loss
-        }
-        
-        history_path = os.path.join(
-            self.config['checkpoint_dir'], 
-            'training_history_primary_model.json'
-        )
-        
-        with open(history_path, 'w') as f:
-            json.dump(history, f, indent=4)
+        print(f"\nTraining complete! Best val loss: {self.best_val_loss:.4f}")
     
     def plot_training_curves(self):
-        """Plot and save training curves"""
         plt.figure(figsize=(10, 6))
         plt.plot(self.train_losses, label='Train Loss', marker='o')
         plt.plot(self.val_losses, label='Val Loss', marker='s')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
-        plt.title('Training and Validation Loss (Attention Model)')
+        plt.title('Training and Validation Loss')
         plt.legend()
         plt.grid(True)
-        
-        plot_path = os.path.join(
-            self.config['checkpoint_dir'], 
-            'training_curves_primary_model.png'
-        )
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.savefig(os.path.join(self.config['checkpoint_dir'], 'training_curves_primary_model.png'))
         plt.close()
-        
-        print(f"Training curves saved to {plot_path}")
 
 
 def create_attention_config():
-    """Create default training configuration for attention model"""
+    # Added all the hyperparameters in config.py
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
     import config as cfg
@@ -276,15 +238,19 @@ def create_attention_config():
         'embed_size': cfg.ATTENTION['embed_size'],
         'attention_dim': cfg.ATTENTION['attention_dim'],
         'decoder_dim': cfg.ATTENTION['decoder_dim'],
-        'encoder_dim': 256,
+        'encoder_dim': cfg.ATTENTION['encoder_dim'],
         'dropout': cfg.ATTENTION['dropout'],
-        'train_cnn': False,
+        
+        'fine_tune_encoder': cfg.ATTENTION['fine_tune_encoder'],
+        'encoder_lr': cfg.ATTENTION['encoder_lr'],
         'learning_rate': cfg.ATTENTION['learning_rate'],
+        
         'weight_decay': cfg.ATTENTION['weight_decay'],
         'grad_clip': cfg.ATTENTION['grad_clip'],
         'alpha_c': cfg.ATTENTION['alpha_c'],
+        
         'batch_size': cfg.ATTENTION['batch_size'],
-        'num_workers': 0,
+        'num_workers': cfg.ATTENTION.get('num_workers', 4),
         'image_size': 224,
         'num_epochs': cfg.ATTENTION['num_epochs'],
         'checkpoint_dir': './checkpoints'
@@ -295,13 +261,12 @@ def create_attention_config():
 if __name__ == "__main__":
     from .model import ImageCaptioningModelAttention
     from .dataset import get_data_loaders_attention
-    import pickle
     
     # Configuration
     config = create_attention_config()
     
     # Paths
-    image_dir = "./raw_data/Images"
+    image_dir = "./raw_data/Images" 
     processed_data_dir = "./data"
     
     # Load vocabulary
@@ -325,11 +290,8 @@ if __name__ == "__main__":
         decoder_dim=config['decoder_dim'],
         vocab_size=vocab_data['vocab_size'],
         encoder_dim=config['encoder_dim'],
-        dropout=config['dropout'],
-        train_cnn=config['train_cnn']
+        dropout=config['dropout']
     )
-    
-    print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
     
     # Create trainer
     print("\nInitializing trainer...")
@@ -338,3 +300,5 @@ if __name__ == "__main__":
     # Start training
     print("\nStarting training...")
     trainer.train(config['num_epochs'])
+
+    print("\nTraining finished.")

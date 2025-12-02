@@ -27,16 +27,27 @@ BASELINE = {
 
 # primary model hyperparameters
 ATTENTION = {
-    'embed_size': 256,
+    'embed_size': 512,       
     'attention_dim': 512,
     'decoder_dim': 512,
+    'encoder_dim': 2048,      
     'dropout': 0.5,
-    'learning_rate': 0.0004,
-    'batch_size': 32,
+    
+    # Training Strategy
+    'batch_size': 64,        
     'num_epochs': 20,
+    'fine_tune_encoder': True,
+    
+    # Learning Rates
+    'learning_rate': 4e-4,    
+    'encoder_lr': 1e-4,       
+    
+    # Regularization
     'weight_decay': 1e-5,
     'grad_clip': 5.0,
-    'alpha_c': 1.0
+    'alpha_c': 1.0,          
+    
+    # M4 Pro Optimization
+    'num_workers': 4,         
 }
-
 
